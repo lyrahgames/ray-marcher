@@ -1,3 +1,4 @@
+#include <cmath>
 #include <iomanip>
 #include <iostream>
 #include <random>
@@ -15,24 +16,81 @@ using namespace gl;
 #include <glm/glm.hpp>
 //
 #include <glm/ext.hpp>
+#include <glm/gtx/norm.hpp>
 
 float width = 800;
 float height = 450;
 glm::vec2 fov{M_PI_4 * width / height, M_PI_4};
 glm::vec3 origin{};
 glm::vec3 up{0, 1, 0};
-glm::vec3 camera{10, 0.0f, M_PI_2};
+glm::vec3 camera{5, 0.0f, M_PI_2};
 
 std::vector<unsigned char> data{};
 
 void update() {
+  // Camera vectors
+  auto direction =
+      -camera.x * glm::vec3{cos(camera.y) * cos(camera.z), sin(camera.y),
+                            cos(camera.y) * sin(camera.z)};
+  auto position = origin - direction;
+  direction = normalize(direction);
+  auto right = cross(direction, up);
+  right = normalize(right);
+  auto cup = cross(right, direction);
+  float pixel_size = 2.0f * tan(0.5f * fov.y) / height;
+
   data.resize(3 * width * height);
+
+#pragma omp parallel for
   for (size_t j = 0; j < height; ++j) {
     for (size_t i = 0; i < width; ++i) {
+      // Construct primary ray.
+      auto ray_o = position;
+      auto ray_d = direction + (pixel_size * (i - width / 2)) * right +
+                   (pixel_size * (j - height / 2)) * cup;
+      ray_d = normalize(ray_d);
+
+      float total = 0.0f;
+      int steps = 0;
+      float last = INFINITY;
+      const int max_steps = 100;
+      for (; steps < max_steps; ++steps) {
+        auto p = ray_o + total * ray_d;
+        //
+        // float distance = std::abs(glm::length(p - origin) - 1.0f);
+        auto z = p;
+        float dr = 1.0;
+        float r = 0.0;
+        for (int i = 0; i < 1000; i++) {
+          r = length(z);
+          if (r > 4) break;
+          // convert to polar coordinates
+          float theta = std::acos(z.z / r);
+          float phi = std::atan(z.y / z.x);
+          const float Power = 8;
+          dr = std::pow(r, Power - 1.0) * Power * dr + 1.0;
+          // scale and rotate the point
+          float zr = pow(r, Power);
+          theta = theta * Power;
+          phi = phi * Power;
+          // convert back to cartesian coordinates
+          z = zr * glm::vec3(std::sin(theta) * std::cos(phi),
+                             std::sin(phi) * std::sin(theta), std::cos(theta));
+          z += p;
+        }
+        float distance = 0.5 * std::log(r) * r / dr;
+        //
+        total += distance;
+        if (distance < 1e-3f) break;
+        last = distance;
+      }
+      float color = (1.0f - float(steps) / float(max_steps));
+      // float color = 0.5f * (dot(ray_d, direction) + 1.0f);
+
       const auto index = 3 * (j * width + i);
-      data[index + 0] = 255.0f * i / width;
-      data[index + 1] = 255.0f * j / height;
-      data[index + 2] = 255.0f * (i + j) / (width + height);
+      data[index + 0] = 255.0f * color;
+      data[index + 1] = 255.0f * color;
+      data[index + 2] = 255.0f * color;
     }
   }
   glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB,
