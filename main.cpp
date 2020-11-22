@@ -23,6 +23,22 @@ glm::vec3 origin{};
 glm::vec3 up{0, 1, 0};
 glm::vec3 camera{10, 0.0f, M_PI_2};
 
+std::vector<unsigned char> data{};
+
+void update() {
+  data.resize(3 * width * height);
+  for (size_t j = 0; j < height; ++j) {
+    for (size_t i = 0; i < width; ++i) {
+      const auto index = 3 * (j * width + i);
+      data[index + 0] = 255.0f * i / width;
+      data[index + 1] = 255.0f * j / height;
+      data[index + 2] = 255.0f * (i + j) / (width + height);
+    }
+  }
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB,
+               GL_UNSIGNED_BYTE, data.data());
+}
+
 int main(void) {
   using namespace std;
 
@@ -30,9 +46,8 @@ int main(void) {
   mt19937 rng{random_device{}()};
   uniform_real_distribution<float> dist{-1.0f, 1.0f};
 
-  const size_t samples = 1000;
-  vector<glm::vec3> points(samples);
-  for (auto& p : points) p = glm::vec3{dist(rng), dist(rng), dist(rng)};
+  vector<glm::vec2> points{{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+  vector<uint32_t> elements{0, 1, 2, 0, 2, 3};
 
   glfwSetErrorCallback([](int error, const char* description) {
     throw runtime_error{"GLFW Error " + to_string(error) + ": " + description};
@@ -68,33 +83,37 @@ int main(void) {
   glGenVertexArrays(1, &vertex_array);
   glBindVertexArray(vertex_array);
 
-  // GLuint element_buffer;
-  // glGenBuffers(1, &element_buffer);
-  // glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, element_buffer);
-  // glBufferData(GL_ELEMENT_ARRAY_BUFFER, elements.size() * sizeof(uint32_t),
-  //              elements.data(), GL_STATIC_DRAW);
+  GLuint element_buffer;
+  glGenBuffers(1, &element_buffer);
+  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, element_buffer);
+  glBufferData(GL_ELEMENT_ARRAY_BUFFER, elements.size() * sizeof(uint32_t),
+               elements.data(), GL_STATIC_DRAW);
 
   GLuint vertex_buffer;
   glGenBuffers(1, &vertex_buffer);
   glBindBuffer(GL_ARRAY_BUFFER, vertex_buffer);
-  glBufferData(GL_ARRAY_BUFFER, sizeof(glm::vec3) * points.size(),
+  glBufferData(GL_ARRAY_BUFFER, sizeof(glm::vec2) * points.size(),
                points.data(), GL_STATIC_DRAW);
 
   auto vertex_shader = glCreateShader(GL_VERTEX_SHADER);
   const char* vertex_shader_text =
       "#version 330\n"
       "uniform mat4 MVP;"
-      "attribute vec3 vPos;"
+      "attribute vec2 vPos;"
+      "out vec2 texuv;"
       "void main() {"
-      "  gl_Position = MVP * vec4(vPos, 1.0);"
+      "  gl_Position = MVP * vec4(vPos, 0.0, 1.0);"
+      "  texuv = vPos;"
       "}";
   glShaderSource(vertex_shader, 1, &vertex_shader_text, NULL);
   glCompileShader(vertex_shader);
   auto fragment_shader = glCreateShader(GL_FRAGMENT_SHADER);
   const char* fragment_shader_text =
       "#version 330\n"
+      "in vec2 texuv;"
+      "uniform sampler2D tex;"
       "void main() {"
-      "  gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);"
+      "  gl_FragColor = texture(tex, texuv);"
       "}";
   glShaderSource(fragment_shader, 1, &fragment_shader_text, NULL);
   glCompileShader(fragment_shader);
@@ -106,11 +125,23 @@ int main(void) {
   auto vpos_location = glGetAttribLocation(program, "vPos");
 
   glEnableVertexAttribArray(vpos_location);
-  glVertexAttribPointer(vpos_location, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3),
+  glVertexAttribPointer(vpos_location, 2, GL_FLOAT, GL_FALSE, sizeof(glm::vec2),
                         (void*)0);
 
+  GLuint texture;
+  glGenTextures(1, &texture);
+  glBindTexture(GL_TEXTURE_2D, texture);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+  // glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB,
+  //              GL_UNSIGNED_BYTE, data.data());
+  // glGenerateMipmap(GL_TEXTURE_2D);
+
   glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
-  glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+  // glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
   glPointSize(5.0f);
   glEnable(GL_MULTISAMPLE);
   glEnable(GL_POINT_SMOOTH);
@@ -137,27 +168,30 @@ int main(void) {
       camera.y = clamp(camera.y, -eye_altitude_max_abs, eye_altitude_max_abs);
     }
 
+    update();
+
     glViewport(0, 0, width, height);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    glm::mat4x4 m{1.0f};
-    // m = rotate(m, (float)glfwGetTime(), glm::vec3(1, 1, 1));
-    const auto v = glm::lookAt(
-        origin + camera.x * glm::vec3{cos(camera.y) * cos(camera.z),  //
-                                      sin(camera.y),                  //
-                                      cos(camera.y) * sin(camera.z)},
-        origin, up);
-    const auto p = glm::perspective(fov.y, width / height, 0.1f, 100.f);
-    glm::mat4 mvp = p * v * m;
+    // glm::mat4x4 m{1.0f};
+    // // m = rotate(m, (float)glfwGetTime(), glm::vec3(1, 1, 1));
+    // const auto v = glm::lookAt(
+    //     origin + camera.x * glm::vec3{cos(camera.y) * cos(camera.z),  //
+    //                                   sin(camera.y),                  //
+    //                                   cos(camera.y) * sin(camera.z)},
+    //     origin, up);
+    // const auto p = glm::perspective(fov.y, width / height, 0.1f, 100.f);
+    // glm::mat4 mvp = p * v * m;
+
+    glm::mat4 mvp = glm::ortho(0, 1, 0, 1, 0, 1);
 
     glUseProgram(program);
     glUniformMatrix4fv(mvp_location, 1, GL_FALSE, glm::value_ptr(mvp));
 
-    // glPointSize(1.0f);
     glBufferData(GL_ARRAY_BUFFER, sizeof(glm::vec3) * points.size(),
                  points.data(), GL_DYNAMIC_DRAW);
-    glDrawArrays(GL_POINTS, 0, points.size());
-    // glDrawElements(GL_TRIANGLES, elements.size(), GL_UNSIGNED_INT, nullptr);
+    // glDrawArrays(GL_POINTS, 0, points.size());
+    glDrawElements(GL_TRIANGLES, elements.size(), GL_UNSIGNED_INT, nullptr);
 
     glfwSwapBuffers(window);
     glfwPollEvents();
